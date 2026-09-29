@@ -1,0 +1,66 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      API_URL: ${{ vars.API_URL }}
+      VERSION_CODE: ${{ github.run_number }}
+
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Insert the Google Drive web app URL
+        run: |
+          CONFIG=android/app/src/main/assets/www/config.js
+          if [ -n "$API_URL" ]; then
+            sed -i "s#PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE#${API_URL}#" "$CONFIG"
+          fi
+          if grep -q PASTE_YOUR_APPS_SCRIPT "$CONFIG"; then
+            echo "::error::Add the repository variable API_URL (Settings > Secrets and variables > Actions > Variables) with your Apps Script web app URL, then run this again."
+            exit 1
+          fi
+          cat "$CONFIG"
+
+      - name: Build the APK
+        working-directory: android
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Name the APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk SLC-Venue-Inspection.apk
+
+      - name: Keep the APK with this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: SLC-Venue-Inspection-apk
+          path: SLC-Venue-Inspection.apk
+
+      - name: Publish as the latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: SLC Venue Inspection – build ${{ github.run_number }}
+          body: Download SLC-Venue-Inspection.apk below and install it on Android phones.
+          files: SLC-Venue-Inspection.apk
+          make_latest: true
