@@ -175,3 +175,7 @@ textarea.inp { resize: vertical; line-height: 1.45; }
 .entry-row .ecol:first-child { flex: 1.35; }
 .entry .stepper button { width: 34px; }
 .entry .inp[type=time] { font-size: 15px; padding: 10px 6px; }
+
+.ainote { background: var(--green-soft); color: var(--green); padding: 10px; border-radius: 8px; font-size: 13px; margin-bottom: 10px; }
+.ainote.busy { background: #EEF3FF; color: var(--blue); }
+textarea.inp:disabled { opacity: .6; }

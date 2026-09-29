@@ -379,7 +379,7 @@
 
   // ================================================================ current match (editing)
   var Cur = {
-    m: null, timer: null, photoChanged: false,
+    m: null, timer: null, photoChanged: false, aiTried: {},
     load: function (id) {
       if (!this.m || this.m.id !== id) { this.m = getLocal(id); this.photoChanged = false; }
       if (this.m && this.m.days) this.m.days.forEach(L.normalizeDay);
@@ -687,13 +687,49 @@
     function reportTab() {
       var autoText = L.paragraphsToText(L.buildPitchParagraphs(m));
       var edited = !!(m.pitchTextOverride && m.pitchTextOverride.trim());
+      var source = edited ? (m.pitchTextSource || 'edited') : 'auto';
       var stale = edited && m.pitchTextBase && m.pitchTextBase !== autoText;
       var ta = h('textarea', { class: 'inp report-text', placeholder: 'Add preparation days to build the pitch report.' });
       ta.value = edited ? m.pitchTextOverride : autoText;
       ta.addEventListener('input', function () {
         if (!m.pitchTextOverride) m.pitchTextBase = autoText;
-        m.pitchTextOverride = ta.value; touch();
+        m.pitchTextOverride = ta.value; m.pitchTextSource = 'edited'; touch();
       });
+      var aiNote = h('div');
+      var aiBtn = btn('✨  Rewrite with AI', 'ghost', function () { polish(false); });
+      function note(text, tone) {
+        aiNote.innerHTML = '';
+        if (text) aiNote.appendChild(h('div', { class: tone === 'busy' ? 'ainote busy' : tone === 'warn' ? 'warn' : 'ainote' }, text));
+      }
+      // Ask the Google backend to rewrite the draft in natural report language.
+      function polish(auto) {
+        if (!autoText) return;
+        var matchId = m.id;
+        Cur.aiTried[matchId + '|' + autoText] = true;
+        aiBtn.disabled = true;
+        ta.disabled = true;
+        note('✨ Rewriting the pitch text with AI…', 'busy');
+        api('polishText', { token: session.token, text: autoText }).then(function (res) {
+          if (!Cur.m || Cur.m.id !== matchId) return;
+          m.pitchTextOverride = res.text; m.pitchTextBase = autoText; m.pitchTextSource = 'ai';
+          touch(); Cur.flush();
+          if (entry.tab === 'report' && top() === entry) drawContent();
+        }, function (e) {
+          aiBtn.disabled = false; ta.disabled = false;
+          if (e.code === 'AUTH') { handleErr(e); return; }
+          if (e.code === 'NO_AI' || e.code === 'UNKNOWN_ACTION') {
+            note(auto ? '' : 'AI rewriting is not set up on the Google backend yet, so the standard text is used.', 'warn');
+          } else if (e.code === 'NETWORK') {
+            note(auto ? 'No internet – showing the standard text. Tap “Rewrite with AI” when online.' : e.message, 'warn');
+          } else {
+            note(e.message, 'warn');
+          }
+        });
+      }
+      var tryKey = m.id + '|' + autoText;
+      if (autoText && m.days.length && !Cur.aiTried[tryKey] && (!edited || (source === 'ai' && stale))) {
+        setTimeout(function () { polish(true); }, 0);
+      }
       var missing = [];
       if (!m.days.length) missing.push('No preparation days added');
       if (!m.photo) missing.push('No pitch photo');
@@ -723,13 +759,18 @@
         });
       }
       return [
-        card('1. Pitch – report text', edited ? badge('Edited', 'gold') : badge('Auto'),
-          h('p', { class: 'muted' }, 'Written automatically from your daily entries. You can correct the wording below before generating.'),
-          stale ? h('div', { class: 'warn' }, 'Daily entries changed after you edited this text. Tap “Rewrite from entries” to include the changes.') : null,
+        card('1. Pitch – report text',
+          source === 'ai' ? badge('AI polished', 'green') : source === 'edited' ? badge('Edited', 'gold') : badge('Auto'),
+          h('p', { class: 'muted' }, source === 'ai'
+            ? 'Rewritten by AI from your daily entries – all dates, times and numbers were checked. Read it and correct anything before generating.'
+            : 'Written from your daily entries. You can correct the wording below before generating.'),
+          stale && source !== 'ai' ? h('div', { class: 'warn' }, 'Daily entries changed after you edited this text. Tap “Use standard text” or “Rewrite with AI” to include the changes.') : null,
+          aiNote,
           ta,
-          edited ? h('div', { style: 'margin-top:10px' }, btn('Rewrite from entries', 'ghost', function () {
-            m.pitchTextOverride = ''; m.pitchTextBase = ''; touch(); drawContent();
-          })) : null),
+          h('div', { style: 'margin-top:10px' }, aiBtn,
+            edited ? btn('Use standard text', 'ghost', function () {
+              m.pitchTextOverride = ''; m.pitchTextBase = ''; m.pitchTextSource = ''; touch(); drawContent();
+            }) : null)),
         missing.length ? card('Before you generate', null,
           missing.map(function (x) { return h('div', { style: 'color:#8A6500;margin-bottom:4px' }, '• ' + x); }),
           h('p', { class: 'muted', style: 'margin:8px 0 0' }, 'You can still generate – empty parts are left blank.')) : null,

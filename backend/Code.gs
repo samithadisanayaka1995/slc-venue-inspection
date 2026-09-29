@@ -102,6 +102,7 @@ function doPost(e) {
     if (a === 'saveMatch') return json_(withLock_(function () { return saveMatch_(user, req.match, req.photoBase64); }));
     if (a === 'generateReport') return json_(withLock_(function () { return generateReport_(user, req.match, req.photoBase64); }));
     if (a === 'deleteMatch') return json_(withLock_(function () { return deleteMatch_(user, req.id); }));
+    if (a === 'polishText') return json_(polishPitchText_(req.text));
     return json_({ ok: false, error: 'UNKNOWN_ACTION' });
   } catch (err) {
     return json_({ ok: false, error: 'SERVER', message: String(err && err.message || err) });
@@ -396,4 +397,126 @@ function testGenerateSample() {
   blob.setName('TEST - Venue Inspection Report.docx');
   var file = folders_().root.createFile(blob);
   Logger.log(file.getUrl());
+}
+
+
+// ============================================================ AI rewrite of the Pitch text
+//
+// Turns the app's draft (built from the curator's entries) into natural report
+// prose. Uses Google Gemini (free key from aistudio.google.com) or, if you
+// prefer, Anthropic Claude. Add ONE of these in Project Settings → Script
+// Properties:
+//   GEMINI_API_KEY      – Google AI Studio key
+//   ANTHROPIC_API_KEY   – Anthropic Console key (paid)
+// Optional: AI_MODEL to choose a specific model.
+// The rewrite is only accepted if every date, time and number is unchanged.
+
+var AI_SYSTEM_PROMPT = [
+  'You are an experienced Sri Lanka Cricket curator writing the "Pitch" section of an official venue inspection report for a domestic tournament match.',
+  'You will receive a draft that was generated automatically from the curator\'s daily log. Rewrite it so it reads as if written by an experienced curator: natural, professional British English, varied sentence structure, smooth transitions, and no repetitive openings such as "At 7.00 a.m., ..." in every sentence.',
+  'STRICT RULES:',
+  '1. Keep every fact exactly: dates, clock times, roller types, numbers of passes, cross rolling, watering amounts and times, mowing heights, crease marking, grass cover, cracks, bounce and remarks. Keep the times written in the same form (e.g. 6.30 a.m.).',
+  '2. Do not add, guess or omit any activity, number, condition or opinion. Do not add weather, reasons or outcomes that are not in the draft.',
+  '3. Keep the same paragraph structure: the opening sentence about the wicket, then one paragraph per day that starts with exactly the same date label and colon as the draft (e.g. "10th December:"), then the closing assessment paragraph.',
+  '4. Keep the order of activities within each day.',
+  '5. Output plain text only: paragraphs separated by a single line break, no headings, no bullet points, no markdown, no quotation marks around the text, no comments before or after.',
+].join('\n');
+
+function aiConfig_() {
+  var p = PropertiesService.getScriptProperties();
+  var gemini = p.getProperty('GEMINI_API_KEY');
+  var claude = p.getProperty('ANTHROPIC_API_KEY');
+  var model = p.getProperty('AI_MODEL');
+  if (gemini) return { provider: 'gemini', key: gemini.trim(), model: model || 'gemini-flash-latest' };
+  if (claude) return { provider: 'claude', key: claude.trim(), model: model || 'claude-haiku-4-5' };
+  return null;
+}
+
+function callAI_(cfg, system, user) {
+  var res, data;
+  if (cfg.provider === 'gemini') {
+    res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' +
+      encodeURIComponent(cfg.model) + ':generateContent', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'x-goog-api-key': cfg.key },
+      muteHttpExceptions: true,
+      payload: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: 'user', parts: [{ text: user }] }],
+        generationConfig: { temperature: 0.6, maxOutputTokens: 8192 },
+      }),
+    });
+    data = JSON.parse(res.getContentText() || '{}');
+    if (res.getResponseCode() !== 200) throw new Error('Gemini: ' + (data.error && data.error.message || res.getResponseCode()));
+    var parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+    return parts.filter(function (x) { return !x.thought; }).map(function (x) { return x.text || ''; }).join('');
+  }
+  res = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'x-api-key': cfg.key, 'anthropic-version': '2023-06-01' },
+    muteHttpExceptions: true,
+    payload: JSON.stringify({
+      model: cfg.model, max_tokens: 2500, temperature: 0.6, system: system,
+      messages: [{ role: 'user', content: user }],
+    }),
+  });
+  data = JSON.parse(res.getContentText() || '{}');
+  if (res.getResponseCode() !== 200) throw new Error('Claude: ' + (data.error && data.error.message || res.getResponseCode()));
+  return (data.content || []).map(function (x) { return x.text || ''; }).join('');
+}
+
+// Tidy the model's answer into plain paragraphs.
+function cleanAIText_(t) {
+  return String(t || '')
+    .replace(/\r/g, '')
+    .replace(/\*\*|__|^#+\s*/gm, '')
+    .replace(/^\s*[-•*]\s+/gm, '')
+    .split(/\n+/).map(function (l) { return l.trim(); }).filter(String)
+    .join('\n')
+    .replace(/^"|"$/g, '');
+}
+
+var DAY_LABEL_RE_ = /^(\d{1,2}(?:st|nd|rd|th)\s+[A-Z][a-z]+|Day\s+\d+)\s*:/gm;
+
+// True when the rewrite kept the day labels and did not change or invent numbers.
+function factsPreserved(src, out) {
+  var labels = function (t) { return (t.match(DAY_LABEL_RE_) || []).map(function (x) { return x.replace(/\s+/g, ' '); }); };
+  var a = labels(src), b = labels(out);
+  if (a.join('|') !== b.join('|')) return { ok: false, why: 'day labels changed' };
+  var nums = function (t) { return t.match(/\d+(?:\.\d+)?/g) || []; };
+  var srcNums = nums(src), outNums = nums(out);
+  var missing = srcNums.filter(function (n) { return outNums.indexOf(n) < 0; });
+  var extra = outNums.filter(function (n) { return srcNums.indexOf(n) < 0; });
+  if (missing.length) return { ok: false, why: 'missing ' + missing.join(', ') };
+  if (extra.length) return { ok: false, why: 'added ' + extra.join(', ') };
+  if (out.length < src.length * 0.5) return { ok: false, why: 'too short' };
+  return { ok: true };
+}
+
+function polishPitchText_(text) {
+  text = String(text || '').trim();
+  if (!text) return { ok: false, error: 'EMPTY', message: 'Nothing to rewrite yet.' };
+  var cfg = aiConfig_();
+  if (!cfg) return { ok: false, error: 'NO_AI', message: 'AI rewriting is not set up (add GEMINI_API_KEY in Script Properties).' };
+  var user = 'Rewrite this draft following the rules.\n\nDRAFT:\n' + text;
+  var lastWhy = '';
+  for (var attempt = 0; attempt < 2; attempt++) {
+    var out = cleanAIText_(callAI_(cfg, AI_SYSTEM_PROMPT, attempt === 0 ? user :
+      user + '\n\nIMPORTANT: your previous answer was rejected because it ' + lastWhy +
+      '. Keep every date label, time and number exactly as in the draft.'));
+    var check = factsPreserved(text, out);
+    if (check.ok) return { ok: true, text: out, provider: cfg.provider, model: cfg.model };
+    lastWhy = check.why;
+  }
+  return { ok: false, error: 'AI_CHECK', message: 'The AI rewrite changed some facts (' + lastWhy + '), so the standard text was kept.' };
+}
+
+/** Run from the editor to check the AI key works. */
+function testAI() {
+  var draft = 'The 7th wicket from the clubhouse side was prepared as a fresh wicket for the upcoming match.\n' +
+    '10th December: Wicket preparation commenced with heavy watering at 6.30 a.m. At 7.00 a.m., the light manual roller was used twice, followed by the medium manual roller twice at 7.30 a.m. At 8.30 a.m., the heavy machine roller was used twice to complete the day\'s preparation.\n' +
+    'The playing surface has good grass cover. Upon inspection the surface was found to have good bounce.';
+  Logger.log(JSON.stringify(polishPitchText_(draft), null, 2));
 }
