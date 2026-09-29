@@ -34,19 +34,32 @@ const OTHER_SECTIONS = [
   { key: 'refereeRoom', label: 'Match referee’s room' },
 ];
 
+function newId(prefix) {
+  return (prefix || 'x') + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+// Current time as "HH:MM" (default for a new rolling / watering entry).
+function nowHHMM() {
+  const d = new Date();
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+function emptyRolling(roller, time) {
+  return { id: newId('r'), roller: roller, time: time == null ? nowHHMM() : time, passes: '1', cross: false };
+}
+
+function emptyWatering(time) {
+  return { id: newId('w'), time: time == null ? nowHHMM() : time, intensity: '' };
+}
+
 function emptyDay(date, pitchNo) {
   return {
-    id: 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    id: newId('d'),
     date: date || '',
     pitchNo: pitchNo || '',
-    rolling: {
-      light: { passes: '', cross: '' },
-      medium: { passes: '', cross: '' },
-      heavyManual: { passes: '', cross: '' },
-      heavyMachine: { passes: '', cross: '' },
-    },
-    watering: { times: '', intensity: '', timing: '' },
-    mowing: { height: '' },
+    rollings: [],   // [{id, roller, time "HH:MM", passes, cross}]
+    waterings: [],  // [{id, time "HH:MM", intensity}]
+    mowing: { height: '', time: '' },
     crease: { done: false, notes: '' },
     grassCover: '',
     bounce: '',
@@ -54,9 +67,37 @@ function emptyDay(date, pitchNo) {
   };
 }
 
+// Converts days saved by the first app version (one total per roller) to
+// the time-stamped entry lists. Safe to call repeatedly.
+function normalizeDay(d) {
+  if (!d) return d;
+  if (!Array.isArray(d.rollings)) {
+    d.rollings = [];
+    const old = d.rolling || {};
+    ROLLERS.forEach((R) => {
+      const x = old[R.key];
+      if (!x) return;
+      if (parseInt(x.passes, 10) > 0) d.rollings.push({ id: newId('r'), roller: R.key, time: '', passes: String(x.passes), cross: false });
+      if (parseInt(x.cross, 10) > 0) d.rollings.push({ id: newId('r'), roller: R.key, time: '', passes: String(x.cross), cross: true });
+    });
+  }
+  if (!Array.isArray(d.waterings)) {
+    d.waterings = [];
+    const w = d.watering || {};
+    const n = parseInt(w.times, 10) || (w.intensity ? 1 : 0);
+    for (let k = 0; k < n; k++) d.waterings.push({ id: newId('w'), time: '', intensity: w.intensity || '' });
+  }
+  delete d.rolling;
+  delete d.watering;
+  if (!d.mowing) d.mowing = { height: '', time: '' };
+  if (d.mowing.time == null) d.mowing.time = '';
+  if (!d.crease) d.crease = { done: false, notes: '' };
+  return d;
+}
+
 function emptyMatch(curator) {
   return {
-    id: 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    id: newId('m'),
     curator: curator || '',
     tournament: '',
     venue: '',
@@ -189,99 +230,121 @@ function endSentence(s) {
   return /[.!?]$/.test(s) ? s : s + '.';
 }
 
-// ---------------------------------------------------------------- watering
-function wateringSentence(w, ctx) {
-  const n = num(w.times);
-  if (!n && !w.intensity) return '';
-  const intensity = (w.intensity || '').toLowerCase();
-  const kind = intensity ? intensity + ' watering' : 'watering';
-  const count = n > 1 ? ' ' + times(n) : '';
-  const timing = w.timing === 'Evening' ? ' in the evening'
-    : w.timing === 'Morning' ? ' in the morning' : '';
+// "06:30" -> "6.30 a.m.", "13:00" -> "1.00 p.m."
+function timeText(t) {
+  const m = /^(\d{1,2}):(\d{2})/.exec(t || '');
+  if (!m) return '';
+  let h = +m[1];
+  const ap = h >= 12 ? 'p.m.' : 'a.m.';
+  h = h % 12 || 12;
+  return h + '.' + m[2] + ' ' + ap;
+}
 
-  if (ctx.first && ctx.dayIndex === 0) {
-    return 'Wicket preparation commenced with ' + kind + (count ? ', carried out' + count : '') + '.';
-  }
-  if (ctx.first) {
-    return pick([
-      'The day began with ' + kind + count + timing + '.',
-      cap(kind) + ' was carried out' + count + timing + ' at the start of the day.',
-    ], ctx.seed);
-  }
-  if (ctx.between) {
-    return pick([
-      'Then ' + kind + ' was done' + count + '.',
-      cap(kind) + ' was then carried out' + count + '.',
-    ], ctx.seed);
-  }
-  return pick([
-    cap(kind) + ' was carried out' + count + timing + ' over the entire wicket area.',
-    cap(kind) + ' was done' + count + timing + ' to close the day.',
-    cap(kind) + ' was carried out' + count + timing + '.',
-  ], ctx.seed);
+function at(t) {
+  const tt = timeText(t);
+  return tt ? ' at ' + tt : '';
+}
+
+// Put a phrase before the final full stop of a sentence.
+function beforeStop(sentence, tail) {
+  return tail ? sentence.replace(/\.$/, tail + '.') : sentence;
 }
 
 // ---------------------------------------------------------------- rolling
-function manualRollingSentences(list, seed, dayIndex, lead) {
-  // list: [{adj, passes, cross}] in roller order
+// A run of consecutive rolling entries (no watering/mowing in between).
+function rollingRunSentences(run, ctx) {
   const out = [];
-  if (!list.length) return out;
-  const allOnce = list.length >= 2 && list.every((r) => r.passes === 1);
-  const prefix = lead ? lead + ' ' : '';
+  const desc = (e) => (e.cross ? e.adj + ' cross rolling' : 'the ' + e.adj + ' roller');
+  const first = run[0];
+  const t0 = timeText(first.t);
+  let lead = t0 ? 'At ' + t0 + ', ' : (ctx.first ? '' : pick(['Thereafter, ', 'Then ', ''], ctx.seed));
 
-  if (allOnce) {
-    const names = list.map((r) => r.adj + ' roller');
-    out.push(cap(prefix + pick([
-      'the ' + listJoin(names) + ' were used one after another.',
-      'the ' + listJoin(names) + ' were each used once.',
-    ], seed)));
+  let s1;
+  if (first.cross) {
+    s1 = lead + first.adj + ' cross rolling was carried out' + (first.passes > 1 ? ' with ' + passes(first.passes) : '');
   } else {
-    const first = list[0];
-    let s = prefix + 'the ' + first.adj + ' roller was used ' + times(first.passes);
-    if (list[1]) {
-      const second = list[1];
-      s += pick([
-        ', followed by ' + rounds(second.passes) + ' with the ' + second.adj + ' roller',
-        ', followed by the ' + second.adj + ' roller ' + times(second.passes),
-      ], seed + 1);
-    }
-    out.push(cap(s) + '.');
-    list.slice(2).forEach((r, i) => {
-      out.push(pick([
-        'The ' + r.adj + ' roller was then used ' + times(r.passes) + '.',
-        cap(passes(r.passes)) + ' ' + (r.passes === 1 ? 'was' : 'were') + ' then made with the ' + r.adj + ' roller.',
-      ], seed + i));
-    });
+    s1 = lead + 'the ' + first.adj + ' roller was used ' + times(first.passes);
   }
+  const second = run[1];
+  if (second) {
+    if (second.cross) {
+      s1 += ', followed by ' + second.adj + ' cross rolling' + (second.passes > 1 ? ' (' + passes(second.passes) + ')' : '') + at(second.t);
+    } else {
+      s1 += pick([
+        ', followed by ' + rounds(second.passes) + ' with the ' + second.adj + ' roller' + at(second.t),
+        ', followed by the ' + second.adj + ' roller ' + times(second.passes) + at(second.t),
+      ], ctx.seed + 1);
+    }
+  }
+  out.push(cap(s1) + '.');
+  run.slice(2).forEach((e, i) => {
+    if (e.cross) {
+      out.push(cap(e.adj) + ' cross rolling was then carried out' + at(e.t) + (e.passes > 1 ? ' with ' + passes(e.passes) : '') + '.');
+    } else {
+      out.push(pick([
+        'The ' + e.adj + ' roller was then used ' + times(e.passes) + at(e.t) + '.',
+        timeText(e.t) ? 'At ' + timeText(e.t) + ', the ' + e.adj + ' roller was used ' + times(e.passes) + '.'
+          : cap(passes(e.passes)) + ' ' + (e.passes === 1 ? 'was' : 'were') + ' then made with the ' + e.adj + ' roller.',
+      ], ctx.seed + i));
+    }
+  });
+  if (ctx.tail) out[out.length - 1] = beforeStop(out[out.length - 1], ctx.tail);
   return out;
 }
 
-function crossRollingSentences(list, seed) {
-  return list.map((r, i) => {
-    const extra = r.cross > 1 ? ' with ' + passes(r.cross) : '';
-    return pick([
-      cap(r.adj) + ' cross rolling was then carried out' + extra + '.',
-      cap(r.adj) + ' cross rolling was completed thereafter' + extra + '.',
-    ], seed + i);
+// ---------------------------------------------------------------- watering
+// A run of consecutive watering entries.
+function wateringRunSentences(run, ctx) {
+  const out = [];
+  // Group neighbours with the same intensity: "Light watering was carried out twice, at 9.00 a.m. and 4.00 p.m."
+  const groups = [];
+  run.forEach((e) => {
+    const g = groups[groups.length - 1];
+    if (g && g.intensity === e.intensity) g.items.push(e); else groups.push({ intensity: e.intensity, items: [e] });
   });
+  groups.forEach((g, gi) => {
+    const kind = g.intensity ? g.intensity + ' watering' : 'watering';
+    const n = g.items.length;
+    const tts = g.items.map((e) => timeText(e.t)).filter((x, k, arr) => x && arr.indexOf(x) === k);
+    const when = tts.length ? ' at ' + listJoin(tts) : '';
+    const count = n > 1 ? ' ' + times(n) + (tts.length ? ',' : '') : '';
+    const isFirst = ctx.first && gi === 0;
+    if (isFirst && ctx.dayIndex === 0) {
+      out.push('Wicket preparation commenced with ' + kind + when + (n > 1 ? ', carried out ' + times(n) : '') + '.');
+    } else if (isFirst && !tts.length) {
+      out.push('The day began with ' + kind + (n > 1 ? ', carried out ' + times(n) : '') + '.');
+    } else if (tts.length) {
+      out.push(pick([
+        cap(kind) + ' was carried out' + count + when + '.',
+        cap(kind) + ' was done over the entire wicket area' + count + when + '.',
+      ], ctx.seed + gi));
+    } else {
+      out.push(pick([
+        cap(kind) + ' was then carried out' + (n > 1 ? ' ' + times(n) : '') + '.',
+        'Then ' + kind + ' was done' + (n > 1 ? ' ' + times(n) : '') + '.',
+      ], ctx.seed + gi));
+    }
+  });
+  return out;
 }
 
 // ---------------------------------------------------------------- mowing
-function mowingSentence(height, prevHeight, seed) {
+function mowingSentence(height, prevHeight, seed, t) {
   const h = clean(height);
   if (!h) return '';
   const mm = /mm$/i.test(h) ? h : h + ' mm';
   const p = parseFloat(prevHeight);
   const c = parseFloat(h);
+  const when = at(t);
   if (!isNaN(p) && !isNaN(c) && c < p) {
     return pick([
-      'Turf grass mowing was carried out, bringing the grass height down to ' + mm + '.',
-      'Turf grass mowing was completed, reducing the grass height to ' + mm + '.',
+      'Turf grass mowing was carried out' + when + ', bringing the grass height down to ' + mm + '.',
+      'Turf grass mowing was completed' + when + ', reducing the grass height to ' + mm + '.',
     ], seed);
   }
   return pick([
-    'Turf grass mowing was carried out at a grass height of ' + mm + '.',
-    'The turf grass was mowed to a height of ' + mm + '.',
+    'Turf grass mowing was carried out' + when + ' at a grass height of ' + mm + '.',
+    'The turf grass was mowed' + when + ' to a height of ' + mm + '.',
   ], seed);
 }
 
@@ -307,56 +370,59 @@ function bouncePhrase(v) {
 }
 
 // ---------------------------------------------------------------- day
+// Builds a day's paragraph from its time-stamped activities, in time order.
+function dayEvents(day) {
+  normalizeDay(day);
+  const ev = [];
+  day.rollings.forEach((r, i) => {
+    const R = ROLLERS.find((x) => x.key === r.roller);
+    const n = num(r.passes);
+    if (R && n) ev.push({ kind: 'roll', t: clean(r.time), order: i, adj: R.adj, passes: n, cross: !!r.cross });
+  });
+  day.waterings.forEach((w, i) => {
+    ev.push({ kind: 'water', t: clean(w.time), order: 1000 + i, intensity: String(w.intensity || '').toLowerCase() });
+  });
+  const mow = day.mowing && clean(day.mowing.height);
+  if (mow) ev.push({ kind: 'mow', t: clean(day.mowing.time), order: 2000, height: mow });
+  // Timed activities in clock order; entries without a time keep the order they were added.
+  const timed = ev.filter((e) => e.t).sort((x, y) => (x.t < y.t ? -1 : x.t > y.t ? 1 : x.order - y.order));
+  const untimed = ev.filter((e) => !e.t).sort((x, y) => x.order - y.order);
+  return timed.concat(untimed);
+}
+
 function daySentences(day, dayIndex, isLastDay, prevHeight, mainPitch, lastObs) {
   const seed = dayIndex * 7 + 3;
   const s = [];
-  const r = day.rolling || {};
-  const rollers = ROLLERS.map((R) => ({
-    key: R.key,
-    adj: R.adj,
-    passes: num(r[R.key] && r[R.key].passes),
-    cross: num(r[R.key] && r[R.key].cross),
-  }));
-  const manual = rollers.filter((x) => x.key !== 'heavyMachine' && x.passes > 0);
-  const manualCross = rollers.filter((x) => x.key !== 'heavyMachine' && x.cross > 0);
-  const machine = rollers.find((x) => x.key === 'heavyMachine');
-  const w = day.watering || {};
-  const hasWater = num(w.times) > 0 || !!w.intensity;
-  const waterFirst = hasWater && (w.timing === 'Start of day' || w.timing === 'Morning');
-  const mow = day.mowing && clean(day.mowing.height);
 
   if (day.pitchNo && mainPitch && String(day.pitchNo) !== String(mainPitch)) {
     s.push('Work was carried out on pitch No. ' + clean(day.pitchNo) + '.');
   }
 
-  if (waterFirst) s.push(wateringSentence(w, { first: true, dayIndex, seed }));
+  const ev = dayEvents(day);
+  let lastRoll = -1;
+  ev.forEach((e, i) => { if (e.kind === 'roll') lastRoll = i; });
 
-  const lead = !waterFirst && dayIndex > 0 && manual.length
-    ? pick(['', 'In the morning', ''], seed) : '';
-  s.push(...manualRollingSentences(manual, seed, dayIndex, lead));
-  s.push(...crossRollingSentences(manualCross, seed));
-
-  // Mowing sits between manual rolling and the heavy machine roller.
-  if (mow) s.push(mowingSentence(mow, prevHeight, seed));
-
-  if (machine.passes > 0) {
-    const endings = isLastDay
-      ? [' to finalize the preparation', ' to complete the preparation']
-      : [" to complete the day's preparation", ' to further consolidate the surface', ''];
-    const tail = hasWater && !waterFirst ? '' : pick(endings, seed);
-    const then = manual.length || mow ? pick(['then ', ''], seed) : '';
-    s.push(pick([
-      'The heavy machine roller was ' + then + 'used ' + times(machine.passes) + tail + '.',
-      'The heavy machine roller was ' + then + 'used ' + times(machine.passes) + (tail ? tail : ' during the day') + '.',
-    ], seed + 2));
-  }
-  if (machine.cross > 0) {
-    s.push('Heavy machine cross rolling was also carried out' +
-      (machine.cross > 1 ? ' with ' + passes(machine.cross) : '') + '.');
-  }
-
-  if (hasWater && !waterFirst) {
-    s.push(wateringSentence(w, { first: s.length === 0, dayIndex, seed }));
+  let i = 0;
+  while (i < ev.length) {
+    const kind = ev[i].kind;
+    let j = i;
+    while (j < ev.length && ev[j].kind === kind && kind !== 'mow') j++;
+    if (kind === 'mow') j = i + 1;
+    const run = ev.slice(i, j);
+    const ctx = { first: i === 0, dayIndex: dayIndex, seed: seed + i };
+    if (kind === 'roll') {
+      if (j - 1 === lastRoll) {
+        ctx.tail = isLastDay
+          ? pick([' to finalize the preparation', ' to complete the preparation'], seed)
+          : (j === ev.length ? pick([" to complete the day's preparation", ' to further consolidate the surface', ''], seed) : '');
+      }
+      s.push.apply(s, rollingRunSentences(run, ctx));
+    } else if (kind === 'water') {
+      s.push.apply(s, wateringRunSentences(run, ctx));
+    } else {
+      s.push(mowingSentence(run[0].height, prevHeight, seed, run[0].t));
+    }
+    i = j;
   }
 
   if (day.crease && (day.crease.done || clean(day.crease.notes))) {
@@ -374,7 +440,8 @@ function daySentences(day, dayIndex, isLastDay, prevHeight, mainPitch, lastObs) 
 
   if (clean(day.notes)) s.push(endSentence(day.notes));
 
-  return s.filter(Boolean);
+  // "…at 7.30 a.m.." → "…at 7.30 a.m."
+  return s.filter(Boolean).map((x) => x.replace(/([ap]\.m)\.\.(?=\s|$)/g, '$1.'));
 }
 
 // Returns an array of paragraphs: { label?: string, text: string }
@@ -462,7 +529,8 @@ function pitchParagraphsFor(match) {
 }
 g.Logic = {
   ROLLERS, WATERING_INTENSITY, WATERING_TIMING, GRASS_COVER, BOUNCE, CRACKS, WICKET_TYPE, OTHER_SECTIONS,
-  emptyDay, emptyMatch, buildPitchParagraphs, paragraphsToText, textToParagraphs, pitchParagraphsFor,
+  emptyDay, emptyMatch, emptyRolling, emptyWatering, normalizeDay, dayEvents, timeText, nowHHMM,
+  buildPitchParagraphs, paragraphsToText, textToParagraphs, pitchParagraphsFor,
   matchDateText, longDate, dayMonth, ordinal,
 };
 if (typeof module !== 'undefined') module.exports = g.Logic;

@@ -307,6 +307,14 @@
       h('div', { class: 'row', style: 'align-items:center' }, input,
         clearable ? h('button', { class: 'link', style: 'flex:none;color:var(--red)', onClick: function () { input.value = ''; onChange(''); } }, 'Clear') : null));
   }
+  function timeInput(value, onChange) {
+    var input = h('input', { class: 'inp', type: 'time' });
+    input.value = value || '';
+    var fire = function () { onChange(input.value); };
+    input.addEventListener('change', fire);
+    input.addEventListener('input', fire);
+    return input;
+  }
   // Single choice; tapping the chosen one clears it (every field is optional).
   function chips(lbl, hint, options, value, onChange) {
     var wrap = h('div', { class: 'chips' });
@@ -372,7 +380,11 @@
   // ================================================================ current match (editing)
   var Cur = {
     m: null, timer: null, photoChanged: false,
-    load: function (id) { if (!this.m || this.m.id !== id) { this.m = getLocal(id); this.photoChanged = false; } return this.m; },
+    load: function (id) {
+      if (!this.m || this.m.id !== id) { this.m = getLocal(id); this.photoChanged = false; }
+      if (this.m && this.m.days) this.m.days.forEach(L.normalizeDay);
+      return this.m;
+    },
     touch: function () {
       this.m._pending = true;
       var self = this;
@@ -539,11 +551,15 @@
 
   var SHORT = { light: 'LMR', medium: 'MMR', heavyManual: 'HMR', heavyMachine: 'Machine' };
   function daySummary(d) {
+    L.normalizeDay(d);
     var bits = [];
-    var roll = L.ROLLERS.filter(function (r) { return +d.rolling[r.key].passes > 0 || +d.rolling[r.key].cross > 0; })
-      .map(function (r) { var x = d.rolling[r.key]; return SHORT[r.key] + ' ×' + (+x.passes || 0) + (+x.cross ? ' (+' + x.cross + ' cross)' : ''); });
+    var byTime = function (x, y) { return String(x.time || '99').localeCompare(String(y.time || '99')); };
+    var roll = d.rollings.filter(function (e) { return +e.passes > 0; }).slice().sort(byTime)
+      .map(function (e) { return (e.time ? e.time + ' ' : '') + SHORT[e.roller] + ' ×' + e.passes + (e.cross ? ' cross' : ''); });
     if (roll.length) bits.push('🛞 ' + roll.join(', '));
-    if (+d.watering.times || d.watering.intensity) bits.push('💧 ' + [d.watering.intensity, d.watering.times ? '×' + d.watering.times : ''].filter(Boolean).join(' '));
+    var water = d.waterings.slice().sort(byTime)
+      .map(function (w) { return [w.time, w.intensity].filter(Boolean).join(' ') || 'watering'; });
+    if (water.length) bits.push('💧 ' + water.join(', '));
     if (d.mowing.height) bits.push('✂️ ' + d.mowing.height + ' mm');
     if (d.crease.done) bits.push('📏 Creases');
     if (d.grassCover) bits.push('🌱 ' + d.grassCover);
@@ -741,6 +757,46 @@
     var d = m.days[idx];
     entry.leave = function () { Cur.flush(); };
     function touch() { Cur.touch(); }
+    L.normalizeDay(d);
+    var rollWrap = h('div');
+    var waterWrap = h('div');
+    function drawRolling() {
+      rollWrap.innerHTML = '';
+      L.ROLLERS.forEach(function (r) {
+        var entries = d.rollings.filter(function (e) { return e.roller === r.key; });
+        rollWrap.appendChild(h('div', { class: 'roller' },
+          h('div', { class: 'rhead' },
+            h('b', null, r.label, entries.length ? h('small', null, entries.length + (entries.length === 1 ? ' rolling' : ' rollings')) : null),
+            h('button', { class: 'addbtn', onClick: function () { d.rollings.push(L.emptyRolling(r.key)); touch(); drawRolling(); } }, '+ Add')),
+          entries.length ? entries.map(function (e) {
+            return h('div', { class: 'entry' },
+              h('div', { class: 'entry-row' },
+                h('div', { class: 'ecol' }, h('div', { class: 'cap' }, 'Time'), timeInput(e.time, function (v) { e.time = v; touch(); })),
+                h('div', { class: 'ecol' }, h('div', { class: 'cap' }, 'Passes'), stepper(e.passes, function (v) { e.passes = v; touch(); })),
+                h('button', { class: 'del', 'aria-label': 'Remove', onClick: function () {
+                  d.rollings.splice(d.rollings.indexOf(e), 1); touch(); drawRolling();
+                } }, '✕')),
+              h('label', { class: 'cross' },
+                h('input', { type: 'checkbox', checked: e.cross, onChange: function (ev) { e.cross = ev.target.checked; touch(); } }),
+                'Cross rolling'));
+          }) : h('div', { class: 'none' }, 'Not used this day')));
+      });
+    }
+    function drawWatering() {
+      waterWrap.innerHTML = '';
+      if (!d.waterings.length) waterWrap.appendChild(h('div', { class: 'none', style: 'margin-bottom:10px' }, 'No watering recorded'));
+      d.waterings.forEach(function (w, i) {
+        waterWrap.appendChild(h('div', { class: 'entry' },
+          h('div', { class: 'entry-row' },
+            h('div', { class: 'ecol' }, h('div', { class: 'cap' }, 'Watering ' + (i + 1) + ' – time'), timeInput(w.time, function (v) { w.time = v; touch(); })),
+            h('button', { class: 'del', 'aria-label': 'Remove', onClick: function () {
+              d.waterings.splice(i, 1); touch(); drawWatering();
+            } }, '✕')),
+          chips(null, null, L.WATERING_INTENSITY, w.intensity, function (v) { w.intensity = v; touch(); })));
+      });
+    }
+    drawRolling();
+    drawWatering();
     function del() {
       confirmBox('Delete Day ' + (idx + 1) + '?', 'This removes all entries for this day.', 'Delete', true).then(function (ok) {
         if (!ok) return;
@@ -754,22 +810,17 @@
           dateField('Date', d.date, function (v) { d.date = v; touch(); }, true),
           field({ label: 'Pitch number', hint: 'pitch being prepared for the match', value: d.pitchNo, placeholder: 'e.g. 7', onInput: function (v) { d.pitchNo = v; touch(); } })),
         card('3. Rolling', null,
-          h('p', { class: 'muted' }, 'Number of passes with each roller. Add cross-rolling passes if cross rolling was done.'),
-          L.ROLLERS.map(function (r) {
-            var x = d.rolling[r.key];
-            return h('div', { class: 'roller' }, h('b', null, r.label),
-              h('div', { class: 'row' },
-                h('div', null, h('div', { class: 'cap' }, 'Passes'), stepper(x.passes, function (v) { x.passes = v; touch(); })),
-                h('div', null, h('div', { class: 'cap' }, 'Cross rolling passes'), stepper(x.cross, function (v) { x.cross = v; touch(); }))));
-          })),
+          h('p', { class: 'muted' }, 'Rollers can be used at any time and any number of times. Tap + Add on a roller for each rolling, then set the time and the number of passes.'),
+          rollWrap),
         card('4. Watering', null,
-          h('div', { class: 'row fld', style: 'align-items:center' }, h('b', { style: 'font-size:14px' }, 'How many times'),
-            stepper(d.watering.times, function (v) { d.watering.times = v; touch(); })),
-          chips('Amount', null, L.WATERING_INTENSITY, d.watering.intensity, function (v) { d.watering.intensity = v; touch(); }),
-          chips('When', null, L.WATERING_TIMING, d.watering.timing, function (v) { d.watering.timing = v; touch(); })),
+          h('p', { class: 'muted' }, 'Add an entry for each watering during the day, with its time and amount.'),
+          waterWrap,
+          h('button', { class: 'addbtn wide', onClick: function () { d.waterings.push(L.emptyWatering()); touch(); drawWatering(); } }, '+ Add watering')),
         card('5. Mowing', null,
-          field({ label: 'Grass height after mowing (mm)', value: d.mowing.height, placeholder: 'e.g. 8', inputmode: 'decimal',
-            onInput: function (v) { d.mowing.height = v.replace(/[^0-9.]/g, ''); touch(); } })),
+          h('div', { class: 'row' },
+            field({ label: 'Grass height (mm)', value: d.mowing.height, placeholder: 'e.g. 8', inputmode: 'decimal',
+              onInput: function (v) { d.mowing.height = v.replace(/[^0-9.]/g, ''); touch(); } }),
+            h('div', { class: 'fld' }, label('Time', 'optional'), timeInput(d.mowing.time, function (v) { d.mowing.time = v; touch(); })))),
         card('6. Crease marking', null,
           h('label', { class: 'switch' }, h('span', null, 'Crease marking done'),
             h('input', { type: 'checkbox', checked: d.crease.done, onChange: function (e) { d.crease.done = e.target.checked; touch(); } })),

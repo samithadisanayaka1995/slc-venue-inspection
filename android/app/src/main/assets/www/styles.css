@@ -155,3 +155,23 @@ textarea.inp { resize: vertical; line-height: 1.45; }
 .busy { position: fixed; inset: 0; background: rgba(255,255,255,.6); z-index: 40; display: flex; align-items: center; justify-content: center; }
 .spinner { width: 40px; height: 40px; border: 4px solid var(--line); border-top-color: var(--navy); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* time-stamped rolling / watering entries */
+.rhead { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.rhead b { margin: 0; }
+.rhead small { display: block; font-weight: 400; color: var(--sub); font-size: 12px; margin-top: 2px; }
+.addbtn { border: 0; background: var(--gold); color: var(--navy-dark); font-weight: 800; font-size: 14px; border-radius: 18px; padding: 8px 14px; white-space: nowrap; }
+.addbtn.wide { display: block; width: 100%; padding: 11px; border-radius: 10px; }
+.entry { background: #F7F9FC; border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 8px; }
+.entry-row { display: flex; align-items: flex-end; gap: 10px; }
+.entry-row .ecol { flex: 1; min-width: 0; }
+.entry .inp[type=time] { padding: 10px 8px; height: 46px; }
+.entry .chips { margin-top: 10px; }
+.entry .fld { margin-bottom: 0; }
+.del { flex: none; width: 40px; height: 46px; border: 1px solid var(--line); background: #fff; color: var(--red); border-radius: 10px; font-size: 16px; }
+.cross { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 14px; color: var(--text); }
+.cross input { width: 20px; height: 20px; accent-color: var(--blue); }
+.none { color: var(--sub); font-size: 13px; margin-bottom: 4px; }
+.entry-row .ecol:first-child { flex: 1.35; }
+.entry .stepper button { width: 34px; }
+.entry .inp[type=time] { font-size: 15px; padding: 10px 6px; }
