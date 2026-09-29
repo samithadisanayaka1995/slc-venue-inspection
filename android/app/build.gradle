@@ -1,0 +1,52 @@
+plugins {
+    id 'com.android.application'
+}
+
+// GitHub Actions sets VERSION_CODE to the build number so phones accept updates.
+def buildNumber = (System.getenv('VERSION_CODE') ?: '1').toInteger()
+
+android {
+    namespace 'lk.srilankacricket.venueinspection'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'lk.srilankacricket.venueinspection'
+        minSdk 24
+        targetSdk 34
+        versionCode buildNumber
+        versionName "1.0.${buildNumber}"
+    }
+
+    signingConfigs {
+        release {
+            // Signing key kept in the repository so every build can update the
+            // previous one.
+            storeFile file('slc-release.jks')
+            storeType 'pkcs12'
+            storePassword 'slcvenue2026'
+            keyAlias 'slc'
+            keyPassword 'slcvenue2026'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
+}
