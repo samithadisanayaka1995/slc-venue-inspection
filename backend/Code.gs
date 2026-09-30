@@ -427,30 +427,62 @@ function aiConfig_() {
   var gemini = p.getProperty('GEMINI_API_KEY');
   var claude = p.getProperty('ANTHROPIC_API_KEY');
   var model = p.getProperty('AI_MODEL');
-  if (gemini) return { provider: 'gemini', key: gemini.trim(), model: model || 'gemini-flash-latest' };
+  if (gemini) return { provider: 'gemini', key: gemini.trim(), model: model || 'gemini-flash-latest', custom: !!model };
   if (claude) return { provider: 'claude', key: claude.trim(), model: model || 'claude-haiku-4-5' };
   return null;
+}
+
+// Gemini models tried in order. If one is busy ("high demand") or not
+// available, the next one is used. AI_MODEL (if set) is tried first.
+var GEMINI_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
+
+function geminiOnce_(key, model, system, user) {
+  var res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' +
+    encodeURIComponent(model) + ':generateContent', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { 'x-goog-api-key': key },
+    muteHttpExceptions: true,
+    payload: JSON.stringify({
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: 'user', parts: [{ text: user }] }],
+      generationConfig: { temperature: 0.6, maxOutputTokens: 8192 },
+    }),
+  });
+  var code = res.getResponseCode();
+  var data = {};
+  try { data = JSON.parse(res.getContentText() || '{}'); } catch (e) {}
+  if (code !== 200) {
+    return { code: code, message: (data.error && data.error.message) || ('HTTP ' + code) };
+  }
+  var parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+  var text = parts.filter(function (x) { return !x.thought; }).map(function (x) { return x.text || ''; }).join('');
+  if (!text) return { code: 503, message: 'empty answer' };
+  return { code: 200, text: text };
 }
 
 function callAI_(cfg, system, user) {
   var res, data;
   if (cfg.provider === 'gemini') {
-    res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models/' +
-      encodeURIComponent(cfg.model) + ':generateContent', {
-      method: 'post',
-      contentType: 'application/json',
-      headers: { 'x-goog-api-key': cfg.key },
-      muteHttpExceptions: true,
-      payload: JSON.stringify({
-        systemInstruction: { parts: [{ text: system }] },
-        contents: [{ role: 'user', parts: [{ text: user }] }],
-        generationConfig: { temperature: 0.6, maxOutputTokens: 8192 },
-      }),
-    });
-    data = JSON.parse(res.getContentText() || '{}');
-    if (res.getResponseCode() !== 200) throw new Error('Gemini: ' + (data.error && data.error.message || res.getResponseCode()));
-    var parts = (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
-    return parts.filter(function (x) { return !x.thought; }).map(function (x) { return x.text || ''; }).join('');
+    var models = GEMINI_MODELS.slice();
+    if (cfg.custom) { models = models.filter(function (m) { return m !== cfg.model; }); models.unshift(cfg.model); }
+    var started = Date.now(), last = '';
+    for (var i = 0; i < models.length; i++) {
+      for (var attempt = 0; attempt < 2; attempt++) {
+        if (Date.now() - started > 60000) break; // keep the phone from waiting too long
+        var r = geminiOnce_(cfg.key, models[i], system, user);
+        if (r.code === 200) { cfg.usedModel = models[i]; return r.text; }
+        last = models[i] + ': ' + r.message;
+        if (r.code === 400 || r.code === 401 || r.code === 403) {
+          if (/api key|API_KEY|permission|PERMISSION/i.test(r.message)) throw new Error('Gemini key problem – ' + r.message);
+          break; // this model can't be used; try the next one
+        }
+        if (r.code === 404) break; // model not available; try the next one
+        // 429 / 500 / 503 = busy: wait a little and retry, then move on
+        if (attempt === 0) Utilities.sleep(2500);
+      }
+    }
+    throw new Error('Gemini is busy right now (' + last + '). The standard text was kept – tap "Rewrite with AI" again in a minute.');
   }
   res = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
     method: 'post',
@@ -502,13 +534,17 @@ function polishPitchText_(text) {
   if (!cfg) return { ok: false, error: 'NO_AI', message: 'AI rewriting is not set up (add GEMINI_API_KEY in Script Properties).' };
   var user = 'Rewrite this draft following the rules.\n\nDRAFT:\n' + text;
   var lastWhy = '';
+  try {
   for (var attempt = 0; attempt < 2; attempt++) {
     var out = cleanAIText_(callAI_(cfg, AI_SYSTEM_PROMPT, attempt === 0 ? user :
       user + '\n\nIMPORTANT: your previous answer was rejected because it ' + lastWhy +
       '. Keep every date label, time and number exactly as in the draft.'));
     var check = factsPreserved(text, out);
-    if (check.ok) return { ok: true, text: out, provider: cfg.provider, model: cfg.model };
+    if (check.ok) return { ok: true, text: out, provider: cfg.provider, model: cfg.usedModel || cfg.model };
     lastWhy = check.why;
+  }
+  } catch (err) {
+    return { ok: false, error: 'AI_BUSY', message: String(err && err.message || err) };
   }
   return { ok: false, error: 'AI_CHECK', message: 'The AI rewrite changed some facts (' + lastWhy + '), so the standard text was kept.' };
 }
