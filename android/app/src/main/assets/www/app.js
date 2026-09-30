@@ -7,6 +7,7 @@
   // ================================================================ helpers
   function h(tag, attrs) {
     var el = document.createElement(tag);
+    if (tag === 'button') el.setAttribute('type', 'button');
     if (attrs) {
       Object.keys(attrs).forEach(function (k) {
         var v = attrs[k];
@@ -335,9 +336,9 @@
     function set(v) { input.value = norm(v); onChange(input.value); }
     input.addEventListener('input', function () { set(input.value.replace(/[^0-9]/g, '')); });
     return h('div', { class: 'stepper' },
-      h('button', { onClick: function () { var n = parseInt(input.value, 10); set(isNaN(n) || n <= 1 ? '' : n - 1); } }, '−'),
+      h('button', { class: 'sbtn', 'aria-label': 'Less', onClick: function () { var n = parseInt(input.value, 10); set(isNaN(n) || n <= 1 ? '' : n - 1); } }, '−'),
       input,
-      h('button', { onClick: function () { var n = parseInt(input.value, 10); set(isNaN(n) ? 1 : n + 1); } }, '+'));
+      h('button', { class: 'sbtn', 'aria-label': 'More', onClick: function () { var n = parseInt(input.value, 10); set(isNaN(n) ? 1 : n + 1); } }, '+'));
   }
   function btn(text, cls, onClick) { return h('button', { class: 'btn ' + (cls || 'primary'), onClick: onClick }, text); }
   function badge(text, tone) { return h('span', { class: 'badge ' + (tone || '') }, text); }
@@ -813,13 +814,14 @@
             return h('div', { class: 'entry' },
               h('div', { class: 'entry-row' },
                 h('div', { class: 'ecol' }, h('div', { class: 'cap' }, 'Time'), timeInput(e.time, function (v) { e.time = v; touch(); })),
-                h('div', { class: 'ecol' }, h('div', { class: 'cap' }, 'Passes'), stepper(e.passes, function (v) { e.passes = v; touch(); })),
                 h('button', { class: 'del', 'aria-label': 'Remove', onClick: function () {
                   d.rollings.splice(d.rollings.indexOf(e), 1); touch(); drawRolling();
                 } }, '✕')),
-              h('label', { class: 'cross' },
-                h('input', { type: 'checkbox', checked: e.cross, onChange: function (ev) { e.cross = ev.target.checked; touch(); } }),
-                'Cross rolling'));
+              h('div', { class: 'entry-row', style: 'margin-top:8px' },
+                h('div', { class: 'ecol' }, h('div', { class: 'cap' }, 'Passes'), stepper(e.passes, function (v) { e.passes = v; touch(); })),
+                h('label', { class: 'cross' },
+                  h('input', { type: 'checkbox', checked: e.cross, onChange: function (ev) { e.cross = ev.target.checked; touch(); } }),
+                  'Cross rolling')));
           }) : h('div', { class: 'none' }, 'Not used this day')));
       });
     }

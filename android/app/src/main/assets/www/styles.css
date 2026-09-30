@@ -174,8 +174,6 @@ textarea.inp { resize: vertical; line-height: 1.45; }
 .cross { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 14px; color: var(--text); }
 .cross input { width: 20px; height: 20px; accent-color: var(--blue); }
 .none { color: var(--sub); font-size: 13px; margin-bottom: 4px; }
-.entry-row .ecol:first-child { flex: 1.35; }
-.entry .stepper button { width: 34px; }
 .entry .inp[type=time] { font-size: 15px; padding: 10px 6px; }
 
 .ainote { background: var(--green-soft); color: var(--green); padding: 10px; border-radius: 8px; font-size: 13px; margin-bottom: 10px; }
@@ -196,3 +194,12 @@ input[type=date].inp, input[type=time].inp { -webkit-appearance: none; appearanc
   #app { max-width: 640px; margin: 0 auto; box-shadow: 0 0 0 1px var(--line); background: var(--bg); }
   .fab { right: calc(50% - 304px); }
 }
+
+/* Buttons: no double-tap zoom or default iPhone button styling */
+button, .chip, .stepper, .cross { touch-action: manipulation; -webkit-user-select: none; user-select: none; }
+button { -webkit-appearance: none; appearance: none; -webkit-tap-highlight-color: rgba(11, 42, 91, .12); }
+.stepper { display: grid; grid-template-columns: 48px minmax(0, 1fr) 48px; align-items: center; }
+.stepper .sbtn { width: 48px; height: 46px; padding: 0; margin: 0; border: 0; background: none; color: var(--navy); font-size: 24px; font-weight: 700; line-height: 1; }
+.stepper .sbtn:active { background: var(--chip); }
+.stepper input { width: 100%; min-width: 0; padding: 0; }
+.entry-row .cross { flex: none; margin: 18px 0 0; min-height: 46px; }
