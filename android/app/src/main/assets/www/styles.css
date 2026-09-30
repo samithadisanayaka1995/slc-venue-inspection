@@ -1,4 +1,6 @@
 :root {
+  --st: env(safe-area-inset-top, 0px);
+  --sb: env(safe-area-inset-bottom, 0px);
   --navy: #0B2A5B;
   --navy-dark: #061B3D;
   --blue: #1D4E9E;
@@ -179,3 +181,18 @@ textarea.inp { resize: vertical; line-height: 1.45; }
 .ainote { background: var(--green-soft); color: var(--green); padding: 10px; border-radius: 8px; font-size: 13px; margin-bottom: 10px; }
 .ainote.busy { background: #EEF3FF; color: var(--blue); }
 textarea.inp:disabled { opacity: .6; }
+
+/* iPhone notch / home indicator (0 on Android) */
+.hdr { padding-top: calc(12px + var(--st)); min-height: calc(58px + var(--st)); }
+.tabs { top: calc(58px + var(--st)); }
+.home { padding-top: calc(48px + var(--st)); }
+.page { padding-bottom: calc(110px + var(--sb)); }
+.fab { bottom: calc(24px + var(--sb)); }
+/* iOS zooms into inputs smaller than 16px */
+.entry .inp[type=time], .search input, .stepper input { font-size: 16px; }
+input[type=date].inp, input[type=time].inp { -webkit-appearance: none; appearance: none; min-height: 46px; background: #fff; }
+/* wide screens (computer): keep the phone-style layout centred */
+@media (min-width: 700px) {
+  #app { max-width: 640px; margin: 0 auto; box-shadow: 0 0 0 1px var(--line); background: var(--bg); }
+  .fab { right: calc(50% - 304px); }
+}

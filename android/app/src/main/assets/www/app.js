@@ -924,5 +924,22 @@
   document.addEventListener('visibilitychange', function () { if (document.hidden) Cur.flush(); });
   window.addEventListener('pagehide', function () { Cur.flush(); });
 
+  // ---------------------------------------------------------------- website only
+  // In a browser (iPhone / computer) the phone's Back gesture and the browser's
+  // Back button move back inside the app instead of leaving the page.
+  var isWeb = !(window.Android && window.Android.post);
+  if (isWeb && window.history && history.pushState) {
+    history.replaceState({ slc: 'base' }, '');
+    history.pushState({ slc: 'guard' }, '');
+    window.addEventListener('popstate', function () {
+      if (window.appBack()) history.pushState({ slc: 'guard' }, '');
+      else history.back(); // already on the home screen: leave the site
+    });
+  }
+  // Lets the website open (and show saved work) without internet.
+  if (isWeb && 'serviceWorker' in navigator && /^https?:/.test(location.protocol)) {
+    window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+  }
+
   render();
 })();

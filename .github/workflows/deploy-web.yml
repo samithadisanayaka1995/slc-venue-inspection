@@ -1,0 +1,57 @@
+name: Publish website
+
+# Publishes the same screens as the Android app (android/app/src/main/assets/www)
+# as a website on GitHub Pages, for curators with iPhones or computers.
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      API_URL: ${{ vars.API_URL }}
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Prepare the website files
+        run: |
+          mkdir -p _site
+          cp -r android/app/src/main/assets/www/. _site/
+          if [ -n "$API_URL" ]; then
+            sed -i "s#PASTE_YOUR_APPS_SCRIPT_WEB_APP_URL_HERE#${API_URL}#" _site/config.js
+          fi
+          if grep -q PASTE_YOUR_APPS_SCRIPT _site/config.js; then
+            echo "::error::Add the repository variable API_URL first (Settings > Secrets and variables > Actions > Variables)."
+            exit 1
+          fi
+          # New cache name each publish so phones pick up the update.
+          sed -i "s#slc-inspection-v1#slc-inspection-${GITHUB_RUN_NUMBER}#" _site/sw.js
+          touch _site/.nojekyll
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload the website
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Publish
+        id: deployment
+        uses: actions/deploy-pages@v4
